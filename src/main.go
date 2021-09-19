@@ -39,6 +39,7 @@ func main() {
 		log.Print("Spawning daprd")
 		daprd = exec.Command("/daprd", daprdArgs...)
 		daprd.Stdout = os.Stdout
+		daprd.Stderr = os.Stderr
 		err := daprd.Start()
 		if err != nil {
 			log.Fatal(err)
@@ -47,7 +48,7 @@ func main() {
 
 	if listeningAddress != "" {
 
-		log.Printf("Start Proxy: Listening at %s", listeningAddress)
+		log.Printf("Start Proxy: Redirect  %s to %s", listeningAddress, redirectAddress)
 
 		var proxy tcpproxy.Proxy
 		proxy.AddRoute(listeningAddress, tcpproxy.To(redirectAddress)) // fallback
@@ -76,7 +77,7 @@ func getListeningAddress(daprdArgs []string) string {
 	indexOfAppPort := indexOf(daprdArgs, "--app-port")
 	if indexOfAppPort >= 0 && indexOfAppPort < argsLen-1 {
 		appPort := daprdArgs[indexOfAppPort+1]
-		return fmt.Sprintf(":%s", appPort)
+		return fmt.Sprintf("127.0.0.1:%s", appPort)
 	}
 	return ""
 }
