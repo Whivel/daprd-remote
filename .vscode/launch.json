@@ -10,16 +10,19 @@
             "type": "go",
             "request": "launch",
             "mode": "auto",
-            "program": "src/main.go",
+            "cwd": "src",
+            "program": "src/",
             "args": [
-                "lol",
-                "ciao",
                 "--app-port",
-                //"34"
+                "34"
             ],
             "env": {
                 "IS_DEBUG": "1",
-                "GET_DEBUG_COMMAND": "notepad.exe"
+                "GET_DEBUG_COMMAND": "notepad.exe",
+                "REMOTE_DAPRD_ADDRESS": "example.org:9000",
+                "REMOTE_CONSUL_ADDRESS": "127.0.0.1:8501",
+                "APP_PROXY_STRATEGY": "HTTP",
+                "CONSUL_PROXY_STRATEGY": "HTTP"
             }
         }
     ]

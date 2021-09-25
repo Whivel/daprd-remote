@@ -1,13 +1,14 @@
 package main
 
 import (
-	"fmt"
+	"bytes"
+	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
-
-	tcpproxy "github.com/inetaf/tcpproxy"
+	"sync"
 
 	httpProxy "gopkg.in/elazarl/goproxy.v1"
 )
@@ -17,21 +18,80 @@ func main() {
 	log.Print("Reading startup information")
 
 	daprdArgs := os.Args[1:]
-	redirectAddress := getRedirectAddress()
-	listeningAddress := getListeningAddress(daprdArgs)
+	appRedirectAddress := getAppRedirectAddress()
+	appListeningAddress := getAppListeningAddress(daprdArgs)
+	consulRedirectAddress := getConsulRedirectAddress()
+	consulListeningAddress := getConsulListeningAddress()
 	isDebug := getIsDebugMode()
 	debugCommand := getDebugCommand()
-	proxyStrategy := getProxyStrategy()
+	appProxyStrategy := getAppProxyStrategy()
+	consulProxyStrategy := getConsulProxyStrategy()
+	appConsulAddress := getAppConsulAddress()
 
 	log.Printf("daprdArgs: %s", daprdArgs)
-	log.Printf("redirectAddress: %s", redirectAddress)
-	log.Printf("listeningAddress: %s", listeningAddress)
+	log.Printf("appRedirectAddress: %s", appRedirectAddress)
+	log.Printf("appListeningAddress: %s", appListeningAddress)
+	log.Printf("consulRedirectAddress: %s", consulRedirectAddress)
+	log.Printf("consulListeningAddress: %s", consulListeningAddress)
+	log.Printf("appConsulAddress: %s", appConsulAddress)
 	log.Printf("isDebug: %t", isDebug)
 	log.Printf("debugCommand: %s", debugCommand)
-	log.Printf("proxyStrategy: %s", proxyStrategy)
+	log.Printf("appProxyStrategy: %s", appProxyStrategy)
+	log.Printf("consulProxyStrategy: %s", consulProxyStrategy)
 
 	log.Print("Start")
 
+	var wg sync.WaitGroup
+
+	goLaunch(&wg, func() { launchDaprd(isDebug, debugCommand, daprdArgs) })
+	goLaunch(&wg, func() { createAppProxy(appProxyStrategy, appListeningAddress, appRedirectAddress) })
+	goLaunch(&wg, func() {
+		createConsulProxy(consulProxyStrategy, consulListeningAddress, consulRedirectAddress, appConsulAddress)
+	})
+
+	log.Print("Waiting for termination")
+	wg.Wait()
+}
+
+func createProxy(proxyStrategy string, listeningAddress string, redirectAddress string) *httpProxy.ProxyHttpServer {
+	switch proxyStrategy {
+	case "HTTP":
+		return createHttpProxy(listeningAddress, redirectAddress, "http")
+	case "HTTPS":
+		return createHttpProxy(listeningAddress, redirectAddress, "https")
+	default:
+		log.Fatal("Invalid Proxy Strategy")
+		return nil
+	}
+}
+
+func createHttpProxy(listeningAddress string, redirectAddress string, schema string) *httpProxy.ProxyHttpServer {
+	log.Printf("Start HTTP Proxy: Redirect  %s to %s", listeningAddress, redirectAddress)
+
+	proxy := httpProxy.NewProxyHttpServer()
+	proxy.Verbose = true
+
+	proxy.NonproxyHandler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		req.URL.Host = redirectAddress
+		req.URL.Scheme = schema
+
+		req.Host = redirectAddress
+		log.Print("CCCCCC")
+		proxy.ServeHTTP(w, req)
+	})
+	proxy.OnRequest().HandleConnect(httpProxy.AlwaysMitm)
+	proxy.OnRequest().DoFunc(func(req *http.Request, ctx *httpProxy.ProxyCtx) (*http.Request, *http.Response) {
+		req.URL.Host = redirectAddress
+		req.URL.Scheme = schema
+		req.Host = redirectAddress
+		log.Print("BBBBB")
+		return req, nil
+	})
+	return proxy
+	//log.Fatal(http.ListenAndServe(listeningAddress, proxy))
+}
+
+func launchDaprd(isDebug bool, debugCommand string, daprdArgs []string) {
 	var daprd *exec.Cmd = nil
 	if isDebug {
 
@@ -50,100 +110,64 @@ func main() {
 			log.Fatal(err)
 		}
 	}
+	daprd.Wait()
+	log.Print("Daprd Close")
+}
+
+func createAppProxy(proxyStrategy string, listeningAddress string, redirectAddress string) {
 
 	if listeningAddress != "" {
-		createProxy(listeningAddress, redirectAddress)
-		log.Print("Closed")
-	}
-
-	if daprd != nil {
-		log.Print("Waiting for daprd termination")
-		daprd.Wait()
+		proxy := createProxy(proxyStrategy, listeningAddress, redirectAddress)
+		log.Fatal(http.ListenAndServe(listeningAddress, proxy))
+		log.Print("App Proxy Closed")
 	}
 }
 
-func indexOf(arr []string, value string) int {
-	for i, el := range arr {
-		if el == value {
-			return i
-		}
-	}
-	return -1
-}
+func createConsulProxy(proxyStrategy string, listeningAddress string, redirectAddress string, serviceAddress string) {
+	if redirectAddress != "" {
+		proxy := createProxy(proxyStrategy, listeningAddress, redirectAddress)
+		proxy.OnRequest().DoFunc(func(req *http.Request, ctx *httpProxy.ProxyCtx) (*http.Request, *http.Response) {
+			log.Print("AAAAA")
 
-func getListeningAddress(daprdArgs []string) string {
-	argsLen := len(daprdArgs)
-	indexOfAppPort := indexOf(daprdArgs, "--app-port")
-	if indexOfAppPort >= 0 && indexOfAppPort < argsLen-1 {
-		appPort := daprdArgs[indexOfAppPort+1]
-		return fmt.Sprintf("0.0.0.0:%s", appPort)
-	}
-	return ""
-}
+			if req.URL.Path == "/v1/agent/service/register" {
+				byteData := readReadCloser(req.Body)
+				jsonData := extractJson(byteData)
+				jsonData = changeServiceRegistrationJson(jsonData, serviceAddress)
+				byteData = tryConvertJson(jsonData, byteData)
 
-func getRedirectAddress() string {
-	return os.Getenv("REMOTE_DAPRD_ADDRESS")
-}
+				var byteDataLen int64 = 0
+				var newReadCloser io.ReadCloser = nil
+				if byteData != nil {
+					newReadCloser = io.NopCloser(bytes.NewReader(byteData))
+					byteDataLen = int64(len(byteData))
+				}
+				req.Body = newReadCloser
+				req.ContentLength = byteDataLen
 
-func getIsDebugMode() bool {
-	return os.Getenv("IS_DEBUG") == "1"
-}
+			}
 
-func getDebugCommand() string {
-	return os.Getenv("GET_DEBUG_COMMAND")
-}
+			return req, nil
+		})
 
-func getProxyStrategy() string {
-	value := os.Getenv("PROXY_STRATEGY")
-	if value == "" {
-		value = "HTTP"
-	}
-	return value
-}
-
-func createProxy(listeningAddress string, redirectAddress string) {
-	switch getProxyStrategy() {
-	case "HTTP":
-		createHttpProxy(listeningAddress, redirectAddress, "http")
-	case "HTTPS":
-		createHttpProxy(listeningAddress, redirectAddress, "https")
-	case "TCP":
-		createTcpProxy(listeningAddress, redirectAddress)
-	default:
-		log.Fatal("Invalid Proxy Strategy")
+		log.Fatal(http.ListenAndServe(listeningAddress, proxy))
+		log.Print("Consul Proxy Closed")
 	}
 }
 
-func createTcpProxy(listeningAddress string, redirectAddress string) {
-	log.Printf("Start Tcp Proxy: Redirect  %s to %s", listeningAddress, redirectAddress)
-
-	var proxy tcpproxy.Proxy
-	proxy.AddRoute(listeningAddress, tcpproxy.To(redirectAddress)) // fallback
-	defer proxy.Close()
-	log.Fatal(proxy.Run())
+func changeServiceRegistrationJson(json map[string]interface{}, serviceAddress string) map[string]interface{} {
+	if json != nil {
+		log.Printf("Original service address: %s", json["Address"])
+		json["Address"] = serviceAddress
+		log.Printf("New service address: %s", json["Address"])
+		return json
+	}
+	return nil
 }
 
-func createHttpProxy(listeningAddress string, redirectAddress string, schema string) {
-	log.Printf("Start HTTP Proxy: Redirect  %s to %s", listeningAddress, redirectAddress)
-
-	proxy := httpProxy.NewProxyHttpServer()
-	proxy.Verbose = true
-
-	proxy.NonproxyHandler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		req.URL.Host = redirectAddress
-		req.URL.Scheme = schema
-
-		req.Host = redirectAddress
-		req.Header.Set("X-Host", redirectAddress)
-		proxy.ServeHTTP(w, req)
-	})
-	proxy.OnRequest().HandleConnect(httpProxy.AlwaysMitm)
-	proxy.OnRequest().DoFunc(func(req *http.Request, ctx *httpProxy.ProxyCtx) (*http.Request, *http.Response) {
-		req.URL.Host = redirectAddress
-		req.URL.Scheme = schema
-		req.Host = redirectAddress
-		req.Header.Set("X-Host", redirectAddress)
-		return req, nil
-	})
-	log.Fatal(http.ListenAndServe(listeningAddress, proxy))
+func tryConvertJson(jsonData map[string]interface{}, onErrorData []byte) []byte {
+	newBody, err := json.Marshal(jsonData)
+	if newBody != nil && err == nil {
+		return newBody
+	}
+	return onErrorData
 }
