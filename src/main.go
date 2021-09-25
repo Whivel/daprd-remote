@@ -76,7 +76,6 @@ func createHttpProxy(listeningAddress string, redirectAddress string, schema str
 		req.URL.Scheme = schema
 
 		req.Host = redirectAddress
-		log.Print("CCCCCC")
 		proxy.ServeHTTP(w, req)
 	})
 	proxy.OnRequest().HandleConnect(httpProxy.AlwaysMitm)
@@ -84,7 +83,6 @@ func createHttpProxy(listeningAddress string, redirectAddress string, schema str
 		req.URL.Host = redirectAddress
 		req.URL.Scheme = schema
 		req.Host = redirectAddress
-		log.Print("BBBBB")
 		return req, nil
 	})
 	return proxy
@@ -127,8 +125,6 @@ func createConsulProxy(proxyStrategy string, listeningAddress string, redirectAd
 	if redirectAddress != "" {
 		proxy := createProxy(proxyStrategy, listeningAddress, redirectAddress)
 		proxy.OnRequest().DoFunc(func(req *http.Request, ctx *httpProxy.ProxyCtx) (*http.Request, *http.Response) {
-			log.Print("AAAAA")
-
 			if req.URL.Path == "/v1/agent/service/register" {
 				byteData := readReadCloser(req.Body)
 				jsonData := extractJson(byteData)
