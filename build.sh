@@ -11,6 +11,6 @@ go build -o ../bin/
 echo "Docker..."
 cd ../
 
-docker build -f ./docker/Dockerfile -t whivel/remote-daprd:v0.2 ./bin/
+docker build -f ./docker/Dockerfile -t whivel/remote-daprd:v0.3 ./bin/
 
 read  -n 1 -p "Press a key..."
